@@ -1,9 +1,10 @@
 library(mvtnorm)
 library(maxLik)
 library(compiler)
+library(parallel)
 
 dgp <- function(n=500,T=5,b1=c(0.2,0.2),b2=c(0.8,-0.3),d1,d2){
-#   b <- cbind(b1,b2)
+  b <- cbind(b1,b2)
 #   
   x <- rmvnorm(n,c(0,0),sigma=matrix(c(5,1.5,1.5,5),ncol=2) )
   e <- rmvnorm(n,sigma=matrix(c(1,0,0,1),ncol=2) )
@@ -36,48 +37,6 @@ dgp <- function(n=500,T=5,b1=c(0.2,0.2),b2=c(0.8,-0.3),d1,d2){
   data
 }
 
-
-
-# loglik_test1 <-cmpfun(function(data,b1,b2,d1,d2){
-#   y1_star <- data$x%*%b1
-#   y2_star <- data$x%*%b2
-  
-#   lambda  <- c(1,head(diff(d2),-1),1) / c(1,head(diff(d1),-1),1)
-
-#   out <- rep(NA, nrow(data$x))
-#   for (i in 1:nrow(data$x)){
-#     t <- data$time[i]
-#     if (t==1){
-# #       cat("skipped\n")
-#       next
-#     }
-#     if (data$mode[i]){      
-#         part2 <- function(e1){
-#           1 - pnorm(d2[t]-y2_star[i] + 
-#           (e1 - (d1[t] -y1_star[i]) )* lambda[t] )
-#         }
-        
-#         out[i] <- integrate(part2, lower = d1[t-1] - y1_star[i], upper = d1[t] - y1_star[i])$value
-
-#     }else{  
-#       part2 <- function(e2) {
-#         1 - pnorm(d1[t]-y1_star[i] +
-#         (e2 - (d2[t] -y2_star[i]) )/ lambda[t] )
-#       }
-#       out[i] <- integrate(part2, lower = d2[t-1] - y2_star[i], upper = d2[t] - y2_star[i])$value
-   
-   
-#     }
-#   }
-#   out <- log(out)
-#   out <- out[!is.na(out)]
-#   out <- out[is.finite(out)]
-#   sum(out,na.rm=T)
-  
-# })
-
-
-
 lik_sub_function_1 <- cmpfun(function(x, a, b, c){
   (1 - pnorm(a + (x - b) * c )) * dnorm(x)
 })
@@ -99,7 +58,7 @@ lik_sub_function_2 <- cmpfun( function(x){
   }
 })
 
-loglik_test2 <-cmpfun(function(data,b1,b2,d1,d2,cl){
+loglik <-cmpfun(function(data,b1,b2,d1,d2,cl){
     
   y1_star <- data$x%*%b1
   y2_star <- data$x%*%b2
@@ -147,24 +106,12 @@ loglik_test2 <-cmpfun(function(data,b1,b2,d1,d2,cl){
             
 })
 
-
-
-
-loglik2_test1 <- cmpfun(function(x, data){
+loglik2 <- cmpfun(function(x, data,cl){
   b1 <- x[1:2]
   b2 <- x[3:4]
   d1 <- cumsum(x[5:9])
   d2 <- cumsum(x[10:14])
-  loglik_test1(data,b1,b2,d1,d2)
-})
-
-
-loglik2_test2 <- cmpfun(function(x, data,cl){
-  b1 <- x[1:2]
-  b2 <- x[3:4]
-  d1 <- cumsum(x[5:9])
-  d2 <- cumsum(x[10:14])
-  loglik_test2(data,b1,b2,d1,d2,cl)
+  loglik(data,b1,b2,d1,d2,cl)
 })
 
 
@@ -175,21 +122,30 @@ clusterExport(cl,c("lik_sub_function_2","lik_sub_function_1"))
 
 T <- 5
 n <- 1500
-# d1 <- sort(rnorm(T,2,3))
-# d2 <- sort(rnorm(T,2,3))
+b1 <- c(0.2,0.2)
+b2 <- c(0.8,-0.3)
+
+# tmp <- replicate (10000,sort(rnorm(T,2,3)) )
+# d1 <- rowMeans(tmp)
+# d2 <- rowMeans(tmp)
+#   d1 <- sort(rnorm(T,2,3))
+#   d2 <- sort(rnorm(T,2,3))
+
+d1 <- c(-2.7548169, -0.5625119,  0.2822059,  0.4509177,  3.5232749)
+d2 <- c(-1.90080534, -0.03773230,  0.08249932,  1.64210103,  3.03850519)
 data <- dgp(n=n,T=T,b1=b1,b2=b2,d1,d2)
 table(data$time)
 
 start <- c(b1,b2,c(d1[1],diff(d1)),c(d2[1],diff(d2)))
 
-loglik2_test2(start,data,cl)
+loglik2(start,data,cl)
 system.time({
-out <- maxLik(loglik2_test2,start=start,method="BFGS", data=data,cl=cl)
+out <- maxLik(loglik2,start=start,method="BFGS", data=data,cl=cl)
 })
 out
 out$estimate[1:4]
 
-# benchmark(loglik2_test1(c(b1,b2,d1,d2),data),loglik2_test2(c(b1,b2,d1,d2),data,cl))
+# benchmark(loglik2_test1(c(b1,b2,d1,d2),data),loglik2(c(b1,b2,d1,d2),data,cl))
 
 
 
@@ -199,7 +155,7 @@ out$estimate[1:4]
 # first four is unconstrainted
 ineqA <- diag(14)[c(6:9,11:14),]
 ineqB <- 0
-out2 <- maxLik(loglik2_test2,start=start,method="BFGS", data=data,cl=cl,constraints=list(ineqA=ineqA,ineqB=ineqB))
+out2 <- maxLik(loglik2,start=start,method="BFGS", data=data,cl=cl,constraints=list(ineqA=ineqA,ineqB=ineqB))
 
 out2$estimate[1:4]
 
@@ -212,7 +168,7 @@ for (i in 53:m){
   start_time <- proc.time()[3]
   
   tryCatch({
-    out[[i]] <- maxLik(loglik2_test2,start=start,method="BFGS", data=data,cl=cl)
+    out[[i]] <- maxLik(loglik2,start=start,method="BFGS", data=data,cl=cl)
   }
   , error = function(e) {}
   )
